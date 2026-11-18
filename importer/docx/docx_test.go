@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
+	"strings"
 	"testing"
 
 	word "github.com/mmonterroca/docxgo/v2"
@@ -30,6 +32,9 @@ func TestImporterMapsDocumentStructureAndFormatting(t *testing.T) {
 	paragraph, err := source.AddParagraph()
 	if err != nil {
 		t.Fatal("add paragraph")
+	}
+	if err := paragraph.SetStyle(domain.StyleIDHeading1); err != nil {
+		t.Fatal("set heading style")
 	}
 	if err := paragraph.SetAlignment(domain.AlignmentCenter); err != nil {
 		t.Fatal("center heading")
@@ -83,7 +88,8 @@ func TestImporterMapsDocumentStructureAndFormatting(t *testing.T) {
 	if _, err := source.WriteTo(&data); err != nil {
 		t.Fatalf("write DOCX fixture: %v", err)
 	}
-	imported, err := (Importer{}).Import(context.Background(), bytes.NewReader(data.Bytes()))
+	input := addTabStopToFirstParagraph(t, data.Bytes())
+	imported, err := (Importer{}).Import(context.Background(), bytes.NewReader(input))
 	if err != nil {
 		t.Fatalf("import DOCX: %v", err)
 	}
@@ -100,8 +106,11 @@ func TestImporterMapsDocumentStructureAndFormatting(t *testing.T) {
 		t.Fatal("paragraph was not imported")
 	}
 	gotBold := len(imported.Body[0].Paragraph.Inlines) > 0 && imported.Body[0].Paragraph.Inlines[0].Run != nil && imported.Body[0].Paragraph.Inlines[0].Run.Style.Bold
-	if imported.Body[0].Paragraph.Properties.Alignment != udf.AlignCenter || !gotBold {
-		t.Fatal("paragraph alignment or run formatting was not imported")
+	if imported.Body[0].Paragraph.StyleName != domain.StyleIDHeading1 || imported.Body[0].Paragraph.Properties.Alignment != udf.AlignCenter || !gotBold {
+		t.Fatalf("paragraph properties were not imported: style=%q alignment=%q bold=%t diagnostics=%v", imported.Body[0].Paragraph.StyleName, imported.Body[0].Paragraph.Properties.Alignment, gotBold, imported.Diagnostics)
+	}
+	if tabs := imported.Body[0].Paragraph.Properties.Tabs; len(tabs) != 1 || tabs[0].Position != 36 || tabs[0].Alignment != "right" || tabs[0].Leader != "dot" {
+		t.Fatal("DOCX tab stop was not normalized")
 	}
 	if imported.Body[1].Paragraph == nil || imported.Body[1].Paragraph.Inlines[0].Kind != udf.InlineImage {
 		t.Fatal("embedded DOCX image was not represented as an inline resource")
@@ -159,6 +168,42 @@ func tinyDOCX(t *testing.T) []byte {
 		t.Fatal("write DOCX fixture")
 	}
 	return data.Bytes()
+}
+
+func addTabStopToFirstParagraph(t *testing.T, data []byte) []byte {
+	t.Helper()
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal("open fixture DOCX")
+	}
+	var output bytes.Buffer
+	writer := zip.NewWriter(&output)
+	for _, entry := range reader.File {
+		file, err := entry.Open()
+		if err != nil {
+			t.Fatal("open fixture package entry")
+		}
+		contents, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatal("read fixture package entry")
+		}
+		if entry.Name == "word/document.xml" {
+			contents = []byte(strings.Replace(string(contents), "</w:pStyle>", `</w:pStyle><w:tabs><w:tab w:val="right" w:pos="720" w:leader="dot"/></w:tabs>`, 1))
+		}
+		header := entry.FileHeader
+		out, err := writer.CreateHeader(&header)
+		if err != nil {
+			t.Fatal("create fixture package entry")
+		}
+		if _, err := out.Write(contents); err != nil {
+			t.Fatal("write fixture package entry")
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal("finish fixture DOCX")
+	}
+	return output.Bytes()
 }
 
 func TestImporterEnforcesArchiveEntryLimit(t *testing.T) {

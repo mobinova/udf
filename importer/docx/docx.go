@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/xml"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"math"
 	"path"
+	"strconv"
 	"strings"
 
 	word "github.com/mmonterroca/docxgo/v2"
@@ -50,11 +52,20 @@ type Importer struct {
 var _ udf.Importer = Importer{}
 
 type importState struct {
-	ctx         context.Context
-	options     Options
-	doc         *udf.Document
-	resources   map[[32]byte]string
-	diagnostics int
+	ctx                  context.Context
+	options              Options
+	doc                  *udf.Document
+	resources            map[[32]byte]string
+	diagnostics          int
+	paragraphMetadata    []paragraphMetadata
+	paragraphIndex       int
+	useParagraphMetadata bool
+}
+
+type paragraphMetadata struct {
+	styleName   string
+	tabs        []udf.TabStop
+	invalidTabs int
 }
 
 func (i Importer) Import(ctx context.Context, src io.Reader) (*udf.Document, error) {
@@ -75,18 +86,28 @@ func (i Importer) Import(ctx context.Context, src io.Reader) (*udf.Document, err
 	if err := preflightArchive(data, limits); err != nil {
 		return nil, err
 	}
+	paragraphMetadata, err := readParagraphMetadata(data, limits.maxEntryBytes)
+	if err != nil {
+		return nil, err
+	}
 	parsed, err := word.OpenDocumentFromBytes(data)
 	if err != nil {
 		return nil, fmt.Errorf("DOCX import: parse package: %w", udf.ErrInvalidArchive)
 	}
 	state := &importState{
-		ctx:       ctx,
-		options:   i.Options,
-		doc:       &udf.Document{FormatID: "docx", Properties: udf.DocumentProperties{Values: make(map[string]string)}},
-		resources: make(map[[32]byte]string),
+		ctx:               ctx,
+		options:           i.Options,
+		doc:               &udf.Document{FormatID: "docx", Properties: udf.DocumentProperties{Values: make(map[string]string)}},
+		resources:         make(map[[32]byte]string),
+		paragraphMetadata: paragraphMetadata,
 	}
 	state.importMetadata(parsed)
 	state.importSections(parsed)
+	if countDocxParagraphs(parsed.Blocks()) != len(paragraphMetadata) {
+		state.add("docx.paragraph_metadata_alignment_unavailable", udf.DiagnosticNormalization, "body", "Some DOCX paragraphs are outside the normalized block tree; source style and tab metadata are omitted to avoid misalignment")
+		state.paragraphMetadata = nil
+	}
+	state.useParagraphMetadata = true
 	for _, block := range parsed.Blocks() {
 		if err := contextError(ctx); err != nil {
 			return nil, err
@@ -179,6 +200,127 @@ func preflightArchive(data []byte, limits docxLimits) error {
 		}
 	}
 	return nil
+}
+
+func readParagraphMetadata(data []byte, maxEntryBytes int64) ([]paragraphMetadata, error) {
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("DOCX import: invalid ZIP package: %w", udf.ErrInvalidArchive)
+	}
+	var documentXML []byte
+	for _, entry := range archive.File {
+		if entry.Name != "word/document.xml" {
+			continue
+		}
+		if entry.UncompressedSize64 > uint64(maxEntryBytes) {
+			return nil, udf.ErrLimitExceeded
+		}
+		reader, err := entry.Open()
+		if err != nil {
+			return nil, fmt.Errorf("DOCX import: open document XML: %w", udf.ErrInvalidArchive)
+		}
+		documentXML, err = io.ReadAll(io.LimitReader(reader, maxEntryBytes+1))
+		closeErr := reader.Close()
+		if err != nil || closeErr != nil {
+			return nil, fmt.Errorf("DOCX import: read document XML: %w", udf.ErrInvalidArchive)
+		}
+		if int64(len(documentXML)) > maxEntryBytes {
+			return nil, udf.ErrLimitExceeded
+		}
+		break
+	}
+	if len(documentXML) == 0 {
+		return nil, fmt.Errorf("DOCX import: missing word/document.xml: %w", udf.ErrInvalidArchive)
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(documentXML))
+	decoder.Strict = true
+	var paragraphs []paragraphMetadata
+	var current *paragraphMetadata
+	inParagraphProperties := false
+	inTabs := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("DOCX import: malformed document XML: %w", udf.ErrInvalidXML)
+		}
+		switch node := token.(type) {
+		case xml.StartElement:
+			switch node.Name.Local {
+			case "p":
+				paragraphs = append(paragraphs, paragraphMetadata{})
+				current = &paragraphs[len(paragraphs)-1]
+				inParagraphProperties = false
+				inTabs = false
+			case "pPr":
+				if current != nil {
+					inParagraphProperties = true
+				}
+			case "pStyle":
+				if current != nil && inParagraphProperties {
+					current.styleName = xmlAttribute(node.Attr, "val")
+				}
+			case "tabs":
+				if current != nil && inParagraphProperties {
+					inTabs = true
+				}
+			case "tab":
+				if current != nil && inTabs {
+					stop, ok := parseTabStop(node.Attr)
+					if ok {
+						current.tabs = append(current.tabs, stop)
+					} else {
+						current.invalidTabs++
+					}
+				}
+			}
+		case xml.EndElement:
+			switch node.Name.Local {
+			case "p":
+				current = nil
+				inParagraphProperties = false
+				inTabs = false
+			case "pPr":
+				inParagraphProperties = false
+			case "tabs":
+				inTabs = false
+			}
+		}
+	}
+	return paragraphs, nil
+}
+
+func xmlAttribute(attrs []xml.Attr, name string) string {
+	for _, attr := range attrs {
+		if attr.Name.Local == name {
+			return attr.Value
+		}
+	}
+	return ""
+}
+
+func parseTabStop(attrs []xml.Attr) (udf.TabStop, bool) {
+	position, err := strconv.ParseFloat(xmlAttribute(attrs, "pos"), 64)
+	if err != nil || !finite(position) || position < 0 {
+		return udf.TabStop{}, false
+	}
+	stop := udf.TabStop{Position: position / 20, Alignment: xmlAttribute(attrs, "val")}
+	switch xmlAttribute(attrs, "leader") {
+	case "dot":
+		stop.Leader = "dot"
+	case "hyphen":
+		stop.Leader = "dash"
+	case "underscore", "heavy", "middleDot":
+		stop.Leader = xmlAttribute(attrs, "leader")
+	}
+	switch stop.Alignment {
+	case "left", "center", "right", "decimal":
+		return stop, true
+	default:
+		return udf.TabStop{}, false
+	}
 }
 
 func (s *importState) importMetadata(doc domain.Document) {
@@ -292,6 +434,17 @@ func (s *importState) importParagraph(source domain.Paragraph, location string) 
 			paragraph.StyleName = style.Name()
 		}
 	}
+	if s.useParagraphMetadata && s.paragraphIndex < len(s.paragraphMetadata) {
+		metadata := s.paragraphMetadata[s.paragraphIndex]
+		s.paragraphIndex++
+		if paragraph.StyleName == "" {
+			paragraph.StyleName = metadata.styleName
+		}
+		paragraph.Properties.Tabs = append(paragraph.Properties.Tabs, metadata.tabs...)
+		if metadata.invalidTabs > 0 {
+			s.add("paragraph.tab_stop_approximated", udf.DiagnosticVisualApproximation, location, "One or more DOCX tab stops have an unsupported alignment or position")
+		}
+	}
 	props := &paragraph.Properties
 	switch source.Alignment() {
 	case domain.AlignmentCenter:
@@ -368,6 +521,26 @@ func (s *importState) importParagraph(source domain.Paragraph, location string) 
 		}
 	}
 	return paragraph
+}
+
+func countDocxParagraphs(blocks []domain.Block) int {
+	count := 0
+	for _, block := range blocks {
+		if block.Paragraph != nil {
+			count++
+		}
+		if block.Table != nil {
+			for _, row := range block.Table.Rows() {
+				for _, cell := range row.Cells() {
+					count += len(cell.Paragraphs())
+					for _, nested := range cell.Tables() {
+						count += countDocxParagraphs([]domain.Block{{Table: nested}})
+					}
+				}
+			}
+		}
+	}
+	return count
 }
 
 func textStyle(run domain.Run) udf.TextStyle {
