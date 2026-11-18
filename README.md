@@ -38,8 +38,11 @@ Prebuilt CLI archives for Windows (ZIP), macOS, and Linux (tar.gz) are available
 
 ```sh
 brew tap mobinova/udf
+brew trust mobinova/udf
 brew install mobinova/udf/udf
 ```
+
+Homebrew requires an explicit trust decision before loading formulas from third-party taps.
 
 The DOCX exporter uses the pure-Go [`docxgo/v2`](https://github.com/mmonterroca/docxgo) backend. The parser, text, Markdown, and UDF exporter packages use the Go standard library.
 
