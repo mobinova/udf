@@ -1,2 +1,3 @@
 # Local legal UDF samples may contain confidential document content and signatures.
 .local-fixtures/
+/out/

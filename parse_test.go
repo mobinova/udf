@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -15,21 +16,29 @@ import (
 
 func makeArchive(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
+	data, err := buildArchive(entries)
+	if err != nil {
+		t.Fatalf("build fixture archive: %v", err)
+	}
+	return data
+}
+
+func buildArchive(entries map[string][]byte) ([]byte, error) {
 	var out bytes.Buffer
 	z := zip.NewWriter(&out)
 	for name, data := range entries {
 		w, err := z.Create(name)
 		if err != nil {
-			t.Fatal("create fixture archive")
+			return nil, err
 		}
 		if _, err = w.Write(data); err != nil {
-			t.Fatal("write fixture archive")
+			return nil, err
 		}
 	}
 	if err := z.Close(); err != nil {
-		t.Fatal("finish fixture archive")
+		return nil, err
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 func TestParseUTF16SpansAndTextProjection(t *testing.T) {
@@ -106,6 +115,98 @@ func TestParseRejectsCorruptZipEntry(t *testing.T) {
 	if _, err := ParseBytes(data); err == nil {
 		t.Fatal("corrupt entry unexpectedly parsed")
 	}
+}
+
+func TestParseOptionsEnforceArchiveAndXMLLimits(t *testing.T) {
+	content := `<template format_id="1.8"><content><![CDATA[x
+]]></content><elements><paragraph><content startOffset="0" length="2"/></paragraph></elements></template>`
+	archive := makeArchive(t, map[string][]byte{"content.xml": []byte(content), "extra.bin": []byte("x")})
+
+	tests := []struct {
+		name string
+		opts ParseOptions
+	}{
+		{name: "compressed bytes", opts: ParseOptions{MaxCompressedBytes: 1}},
+		{name: "archive entries", opts: ParseOptions{MaxArchiveEntries: 1}},
+		{name: "entry bytes", opts: ParseOptions{MaxEntryBytes: 8}},
+		{name: "XML depth", opts: ParseOptions{MaxXMLDepth: 1}},
+		{name: "XML nodes", opts: ParseOptions{MaxXMLNodes: 1}},
+		{name: "XML text", opts: ParseOptions{MaxXMLTextBytes: 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ParseBytesWithOptions(archive, test.opts); !errors.Is(err, ErrLimitExceeded) {
+				t.Fatalf("expected resource limit error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestParseRejectsMalformedXMLAndMissingContent(t *testing.T) {
+	for name, content := range map[string]string{
+		"malformed XML":     `<template><content><unclosed></content></template>`,
+		"missing text pool": `<template><elements><paragraph/></elements></template>`,
+		"missing elements":  `<template><content>text</content></template>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive := makeArchive(t, map[string][]byte{"content.xml": []byte(content)})
+			if _, err := ParseBytes(archive); err == nil {
+				t.Fatal("invalid UDF content was accepted")
+			}
+		})
+	}
+}
+
+func TestSignatureEntryIsObservedButNotVerified(t *testing.T) {
+	content := `<template format_id="1.8"><content><![CDATA[x
+]]></content><elements><paragraph><content startOffset="0" length="2"/></paragraph></elements></template>`
+	archive := makeArchive(t, map[string][]byte{"content.xml": []byte(content), "sign.sgn": []byte("synthetic signature bytes")})
+	doc, err := ParseBytes(archive)
+	if err != nil {
+		t.Fatalf("parse signed fixture: %v", err)
+	}
+	if !doc.Signature.Present || doc.Signature.Size == 0 {
+		t.Fatal("signature entry presence or size was not recorded")
+	}
+}
+
+func FuzzParseBytes(f *testing.F) {
+	valid, err := buildArchive(map[string][]byte{"content.xml": []byte(`<template format_id="1.8"><content><![CDATA[x
+]]></content><elements><paragraph><content startOffset="0" length="2"/></paragraph></elements></template>`)})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	f.Add([]byte("not a ZIP archive"))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip()
+		}
+		doc, err := ParseBytes(data)
+		if err != nil {
+			return
+		}
+		if err := Validate(doc); err != nil {
+			t.Fatalf("parser returned an invalid model: %v", err)
+		}
+		first := doc.Text()
+		if first != doc.Text() {
+			t.Fatal("text projection is not deterministic")
+		}
+	})
+}
+
+func FuzzDecodeTree(f *testing.F) {
+	f.Add([]byte(`<template><content>synthetic</content></template>`))
+	f.Add([]byte(`<a><b><c/></b></a>`))
+	f.Add([]byte(`<broken>`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip()
+		}
+		_, _ = decodeTree(data, xmlLimits{depth: 64, nodes: 200000, textBytes: 16 << 20, attrBytes: 16 << 20})
+	})
 }
 
 func TestLocalFixtureCorpusParses(t *testing.T) {

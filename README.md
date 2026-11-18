@@ -1,75 +1,143 @@
-# udf
+# UDF for Go
 
-A local-first Go library for reading UYAP `.udf` documents and exporting their contents to common document formats.
+`github.com/mobinova/udf` is a local-first Go library for reading UYAP `.udf` documents into a normalized document model and exporting that model to text, Markdown, DOCX, or a new unsigned UDF archive.
 
-## Direction
+[![Go CI](https://github.com/mobinova/udf/actions/workflows/ci.yml/badge.svg)](https://github.com/mobinova/udf/actions/workflows/ci.yml)
 
-The project is a UDF library with a format-independent document model and independent exporters. Plain text is the diagnostic exporter; Markdown uses pure Markdown syntax and explicit loss reporting; DOCX is the first WordprocessingML exporter. The UDF exporter writes an unsigned derivative from the model. HTML is the visual inspection format, and PDF follows model validation and use cases.
+The parser and exporters run locally. The library does not send documents or extracted content to a service.
 
-```text
-.udf archive → UDF parser → normalized document model → text / Markdown / DOCX / HTML / PDF exporters
-                                      └→ unsigned UDF derivative
+## Supported formats
+
+| Operation | Package | Status |
+| --- | --- | --- |
+| Read UDF archives into a normalized model | `github.com/mobinova/udf` | Implemented with bounded ZIP/XML parsing |
+| Plain text projection | `github.com/mobinova/udf/export/text` | Implemented; body text only |
+| Markdown | `github.com/mobinova/udf/export/markdown` | Implemented; unsupported visible content is reported or rejected |
+| Word DOCX | `github.com/mobinova/udf/export/docx` | Implemented for the documented model subset; compromises are reported |
+| Write a UDF derivative | `github.com/mobinova/udf/export/udf` | Implemented; output is unsigned and not byte-identical |
+| HTML and PDF | — | Not implemented |
+
+This is not a claim of complete UDF compatibility or exact visual reproduction. The format inventory and remaining proof gates are tracked in [PLAN.md](PLAN.md).
+
+## Requirements and installation
+
+The module requires Go 1.26 or newer.
+
+```sh
+go get github.com/mobinova/udf
 ```
 
-The parser and model are the core product. Exporters should depend on the model, not on UDF archive details, so they can be developed and replaced independently.
+The DOCX exporter uses the pure-Go [`docxgo/v2`](https://github.com/mmonterroca/docxgo) backend. The parser, text, Markdown, and UDF exporter packages use the Go standard library.
 
-## Safety and scope
+## Quick start
 
-- Read UDF archives locally; do not upload documents or extracted contents to third-party services.
-- Never modify the caller's original `.udf` bytes. The parsed model records signature presence only; an exported file is a convenience copy and does not carry or validate the source document's electronic signature.
-- Keep signature bytes opaque unless signature inspection is explicitly implemented and documented.
-- The UDF writer creates a new unsigned archive from the normalized model. It does not edit the source archive or transfer/validate its electronic signature. Exact UYAP rendering fidelity is out of scope.
-
-## Status
-
-The implementation includes bounded UDF parsing, plain-text and Markdown exporters, an unsigned UDF writer, and a DOCX exporter. Markdown covers the current model's rich text, lists, fields, breaks, tables/spans, inline images, and optional headers/footers using Markdown syntax only. Features Markdown cannot preserve produce diagnostics; unsupported visible content fails by default, and `markdown.Options{AllowLossy: true}` opts into reported placeholders. The UDF exporter refuses signed input by default; the `udfexport.Options{AllowUnsigned: true}` option explicitly permits an unsigned derivative, and unsupported source details require `AllowLossy`. It is a semantic model round-trip, not a byte-identical copy. The DOCX exporter uses pure-Go `docxgo/v2`; it maps the current model, including inline tabs, tab stops, verified UDF line spacing, and full-width tables when UDF provides no column widths. It applies the 360-twip document grid observed in the supplied Word examples. Unverified Swing paragraph-indent fields are reported and omitted because converting them directly caused extreme indentation in the comparison documents. When run-level font defaults are absent, it infers a fallback from the most common explicit source font and size and reports that choice. Other formatting it cannot represent is reported. Source UDF signatures are never transferred. HTML, PDF, and general multi-file attachment composition are not implemented. Offset handling currently uses the UTF-16 interpretation suggested by Java/Swing; the local corpus contains no supplementary characters, so this remains to be confirmed with a controlled UYAP Editor fixture. See [`PLAN.md`](PLAN.md) for the prioritized task backlog and remaining proof gates.
-
-DOCX dependency note: `docxgo/v2` is currently MIT-licensed and its module has no third-party Go runtime dependencies. Its maintainers document AGPL-era repository history and a provenance audit for current v2; review that audit when upgrading or changing license assumptions ([project](https://github.com/mmonterroca/docxgo), [provenance audit](https://github.com/mmonterroca/docxgo/blob/master/docs/PROVENANCE_AUDIT.md)).
-
-The module minimum is Go 1.26.0, chosen as the oldest Go release line currently receiving official support.
-
-## Planned Go API
-
-The proposed API returns a structured `udf.Document` with explicit text, ordering, and normalization guarantees. The complete model and semantics are specified in [`PLAN.md`](PLAN.md).
+Parse a local file, inspect its body text, then export Markdown:
 
 ```go
-doc, err := udf.Parse(reader)
-if err != nil {
-	return err
-}
+package main
 
-wholeBodyText := doc.Text()
-pageWidth := doc.Page.Width
-for _, block := range doc.Body {
-	// Inspect paragraphs and tables in source order.
-}
+import (
+	"context"
+	"log"
+	"os"
 
-var exporter udf.Exporter = markdown.Exporter{}
-report, err := exporter.Export(ctx, doc, output)
-if err != nil {
-	return err
-}
-for _, diagnostic := range report.Diagnostics {
-	// Handle this export's reported approximations or omissions.
+	udf "github.com/mobinova/udf"
+	"github.com/mobinova/udf/export/markdown"
+)
+
+func main() {
+	doc, err := udf.ParseFile("input.udf")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Text is a deterministic body-text projection.
+	log.Printf("body has %d characters", len([]rune(doc.Text())))
+
+	out, err := os.Create("output.md")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	report, err := markdown.ExportWithOptions(
+		context.Background(), doc, out,
+		markdown.Options{AllowLossy: true},
+	)
+	closeErr := out.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if closeErr != nil {
+		log.Fatal(closeErr)
+	}
+	for _, diagnostic := range report.Diagnostics {
+		log.Printf("%s at %s: %s", diagnostic.Code, diagnostic.Location, diagnostic.Message)
+	}
 }
 ```
 
-The planned entry points provide default and options-bearing forms for `io.Reader`, file paths, byte slices, and `io.ReaderAt`. `ParseReaderAtWithOptions` is the random-access foundation; other helpers delegate to it without forcing files/byte slices through the generic-reader buffer. `Document.Text()` is a deterministic body-text projection; structured properties, effective styles, page layout, headers/footers, normalized table grids, inline resources, and signature presence are available separately. General multi-file attachment composition is deferred until UDF relationship semantics are demonstrated. Parsing once should let callers choose exporters without depending on the CLI.
+The runnable [conversion example](examples/convert) writes Markdown and DOCX outputs:
 
-## Exporter extensions
+```sh
+go run ./examples/convert -input ./document.udf -outdir ./out
+```
 
-Exporters are separate packages that consume `*udf.Document`. The root package will define a small `udf.Exporter` interface using `context.Context` and `io.Writer`, returning an `ExportReport` and an error. Any third-party package can implement it without registering with this library. Format options and dependencies stay inside each exporter package. Parse diagnostics describe source interpretation; export diagnostics describe compromises made by one conversion.
+The [custom exporter example](examples/custom-exporter) shows how to implement the public exporter interface without parser internals:
+
+```sh
+go run ./examples/custom-exporter ./document.udf > document.json
+```
+
+## Parsing options
+
+The parser offers `Parse`, `ParseFile`, `ParseBytes`, and `ParseReaderAt`, with `WithOptions` variants for each input form. `ParseFile` and `ParseReaderAt` use random-access ZIP parsing; the generic `Parse(io.Reader)` buffers up to the configured compressed-input limit.
+
+Default limits bound compressed and expanded archive data, entry counts, XML depth and node counts, retained text, embedded resources, tables, and diagnostics. Override them with `ParseOptions` when a trusted workload needs different limits.
 
 ```go
-type MyExporter struct{}
-
-func (MyExporter) Export(ctx context.Context, doc *udf.Document, dst io.Writer) (udf.ExportReport, error) {
-	// Convert the shared document model to your format.
-	return udf.ExportReport{}, nil
-}
-
-var exporter udf.Exporter = MyExporter{}
-report, err := exporter.Export(ctx, doc, output)
+doc, err := udf.ParseFileWithOptions("large.udf", udf.ParseOptions{
+	MaxCompressedBytes: 128 << 20,
+	MaxTotalExpanded:   128 << 20,
+})
 ```
 
-An exporter owns the conversion and documents unsupported model features. The caller owns the output writer. The exporter reads the normalized model and does not need to know how UDF ZIP/XML parsing works. See [`PLAN.md`](PLAN.md) for the full contract and fidelity rules.
+The parser records signature presence and archive facts only. It does not verify the signature. The original archive remains the caller's responsibility.
+
+## Exporters and conversion reports
+
+Built-in exporters accept `context.Context`, a `*udf.Document`, and an `io.Writer`. They return an `udf.ExportReport` and an error. The caller owns the writer; an export may leave partial output if the writer fails.
+
+- Markdown emits Markdown syntax and reports features it approximates. `markdown.Options{AllowLossy: true}` explicitly permits placeholders for unsupported visible content. `IncludeHeadersFooters` includes each header and footer once; page repetition cannot be represented in Markdown.
+- DOCX exports the supported document subset. `docx.Options{AllowLossy: true}` permits reported omissions for unsupported visible content. UDF signatures are not copied.
+- The UDF exporter writes a new semantic derivative. Signed source documents require `udf.Options{AllowUnsigned: true}`; source signatures and stale verification codes are not copied. The output is not a byte-for-byte reconstruction.
+- Text export writes `Document.Text()` and does not preserve formatting.
+
+Diagnostics have stable codes and structural locations. Treat diagnostic codes as machine-readable; messages are for people. A successful export can still report approximations, so inspect the report when fidelity matters.
+
+Third-party exporters can implement `udf.Exporter` directly. The model and exporter interface do not require a registry or imports from internal packages.
+
+## Known limits
+
+- Only the UDF structures represented by the current public model can be exported. Unknown or unsupported content may require an explicit lossy option.
+- DOCX export reports inferred font defaults, approximated layout, unsupported styles, and other compromises. Its output should be reviewed in the target word processor.
+- Markdown is a text-oriented projection; it cannot represent page layout or all Word formatting.
+- Related multi-file attachments, HTML, and PDF export are not implemented.
+- UTF-16 text-buffer offsets are implemented based on the Java/Swing evidence available so far. A controlled UYAP Editor fixture with supplementary Unicode characters is still needed to verify the convention.
+- Neither parsing nor export verifies or transfers an electronic signature. Preserve the source `.udf` when its signature matters.
+
+## Development
+
+Tests use synthetic archives and never require private legal documents. Optional local-corpus checks read `.local-fixtures/*.udf`, which is ignored by Git; do not add private UDF files, extracted text, or rendered pages to the repository.
+
+```sh
+gofmt -w $(find . -type f -name '*.go' -not -path './.git/*')
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+The GitHub Actions workflow runs formatting checks, tests, vet, and race tests on pushes and pull requests.
+
+## License
+
+This repository does not yet declare a project license. Public visibility alone does not grant permission to reuse or redistribute the code.
