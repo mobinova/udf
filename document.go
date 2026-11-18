@@ -301,6 +301,13 @@ type SignatureInfo struct {
 	Size    uint64 // ZIP directory size, not a validation result
 }
 
+// Importer converts one explicitly selected source format into the shared
+// Document model. Implementations do not sniff or guess formats; callers pick
+// the importer for the input they have.
+type Importer interface {
+	Import(ctx context.Context, src io.Reader) (*Document, error)
+}
+
 // Exporter converts a Document to one caller-owned output stream.
 type Exporter interface {
 	Export(ctx context.Context, doc *Document, dst io.Writer) (ExportReport, error)

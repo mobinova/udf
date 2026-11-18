@@ -17,6 +17,8 @@ import (
 	markdownexport "github.com/mobinova/udf/export/markdown"
 	textexport "github.com/mobinova/udf/export/text"
 	udfexport "github.com/mobinova/udf/export/udf"
+	docximporter "github.com/mobinova/udf/importer/docx"
+	markdownimporter "github.com/mobinova/udf/importer/markdown"
 )
 
 var (
@@ -84,6 +86,7 @@ func runInspect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	flags := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "write a machine-readable structural summary without document text")
+	inputFormat := flags.String("input-format", "udf", "input format: udf, markdown, or docx")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -91,12 +94,12 @@ func runInspect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	if flags.NArg() != 1 {
-		return errors.New("usage: udf inspect [--json] FILE.udf")
+		return errors.New("usage: udf inspect [--json] [--input-format FORMAT] FILE")
 	}
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	doc, err := udf.ParseFile(flags.Arg(0))
+	doc, err := importFile(ctx, flags.Arg(0), *inputFormat)
 	if err != nil {
 		return err
 	}
@@ -113,13 +116,22 @@ func runInspect(ctx context.Context, args []string, stdout, stderr io.Writer) er
 }
 
 func runText(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) != 1 {
-		return errors.New("usage: udf text FILE.udf")
+	flags := flag.NewFlagSet("text", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	inputFormat := flags.String("input-format", "udf", "input format: udf, markdown, or docx")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 1 {
+		return errors.New("usage: udf text [--input-format FORMAT] FILE")
 	}
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	doc, err := udf.ParseFile(args[0])
+	doc, err := importFile(ctx, flags.Arg(0), *inputFormat)
 	if err != nil {
 		return err
 	}
@@ -137,6 +149,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	allowLossy := flags.Bool("allow-lossy", false, "allow and report unsupported-content fallbacks")
 	allowUnsigned := flags.Bool("allow-unsigned", false, "allow writing an unsigned UDF derivative from signed input")
 	includeHeadersFooters := flags.Bool("include-headers-footers", false, "include headers and footers in Markdown")
+	inputFormat := flags.String("input-format", "udf", "input format: udf, markdown, or docx")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -144,7 +157,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return err
 	}
 	if flags.NArg() != 1 || *format == "" || *output == "" {
-		return errors.New("usage: udf export --format FORMAT --output PATH [OPTIONS] FILE.udf")
+		return errors.New("usage: udf export --format FORMAT [--input-format FORMAT] --output PATH [OPTIONS] FILE")
 	}
 	if err := contextError(ctx); err != nil {
 		return err
@@ -161,7 +174,7 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return errors.New("output and report paths must be different")
 		}
 	}
-	doc, err := udf.ParseFile(input)
+	doc, err := importFile(ctx, input, *inputFormat)
 	if err != nil {
 		return err
 	}
@@ -202,6 +215,29 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return exportErr
 	}
 	return reportErr
+}
+
+func importFile(ctx context.Context, path, format string) (*udf.Document, error) {
+	format = strings.ToLower(format)
+	if format == "udf" {
+		// Preserve the ZIP parser's random-access fast path for local files.
+		return udf.ParseFile(path)
+	}
+	var importer udf.Importer
+	switch format {
+	case "markdown", "md":
+		importer = markdownimporter.Importer{}
+	case "docx", "word":
+		importer = docximporter.Importer{}
+	default:
+		return nil, fmt.Errorf("unsupported input format %q", format)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return importer.Import(ctx, file)
 }
 
 func summarize(doc *udf.Document) inspection {
@@ -351,11 +387,12 @@ func printUsage(dst io.Writer) {
 
 Usage:
   udf version
-  udf inspect [--json] FILE.udf
-  udf text FILE.udf
-  udf export --format FORMAT --output PATH [OPTIONS] FILE.udf
+  udf inspect [--json] [--input-format FORMAT] FILE
+  udf text [--input-format FORMAT] FILE
+  udf export --format FORMAT [--input-format FORMAT] --output PATH [OPTIONS] FILE
 
-Formats: text, markdown, docx, udf
+Input formats: udf, markdown, docx
+Output formats: text, markdown, docx, udf
 Export options: --report PATH, --allow-lossy, --allow-unsigned,
                 --include-headers-footers (Markdown only)
 Use --output - to write document bytes to stdout. Inspection never prints body text.`)

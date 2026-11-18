@@ -68,6 +68,27 @@ func TestInspectJSONOmitsDocumentTextAndTextCommandEmitsIt(t *testing.T) {
 	}
 }
 
+func TestCommandsCanSelectMarkdownImporter(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(input, []byte("# Synthetic heading\n\nAgent-readable body text.\n"), 0600); err != nil {
+		t.Fatal("write Markdown fixture")
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"inspect", "--json", "--input-format", "markdown", input}, &stdout, &stderr); err != nil {
+		t.Fatalf("inspect Markdown: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"format_id": "markdown"`) || strings.Contains(stdout.String(), "Agent-readable body text") {
+		t.Fatal("Markdown inspection did not remain structural and format-aware")
+	}
+	stdout.Reset()
+	if err := run(context.Background(), []string{"text", "--input-format", "markdown", input}, &stdout, &stderr); err != nil {
+		t.Fatalf("text from Markdown: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Agent-readable body text.") {
+		t.Fatal("Markdown input did not flow through the text exporter")
+	}
+}
+
 func TestExportProtectsSourceAndRequiresUnsignedOptIn(t *testing.T) {
 	input := makeSyntheticUDF(t, true)
 	original, err := os.ReadFile(input)

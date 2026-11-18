@@ -1,6 +1,6 @@
 # UDF for Go
 
-`github.com/mobinova/udf` is a local-first Go library for reading UYAP `.udf` documents into a normalized document model and exporting that model to text, Markdown, DOCX, or a new unsigned UDF archive.
+`github.com/mobinova/udf` is a local-first Go library for importing UYAP `.udf`, Markdown, and DOCX files into a normalized document model, then exporting that model to text, Markdown, DOCX, or a new unsigned UDF archive.
 
 [![Go CI](https://github.com/mobinova/udf/actions/workflows/ci.yml/badge.svg)](https://github.com/mobinova/udf/actions/workflows/ci.yml)
 
@@ -10,7 +10,9 @@ The parser and exporters run locally. The library does not send documents or ext
 
 | Operation | Package | Status |
 | --- | --- | --- |
-| Read UDF archives into a normalized model | `github.com/mobinova/udf` | Implemented with bounded ZIP/XML parsing |
+| Import UDF archives into a normalized model | `github.com/mobinova/udf/importer/udf` | Wraps the existing bounded parser; `ParseFile` remains the random-access convenience path |
+| Import Markdown | `github.com/mobinova/udf/importer/markdown` | CommonMark/GFM text, lists, tables, emphasis; linked resources are not fetched |
+| Import DOCX | `github.com/mobinova/udf/importer/docx` | Paragraphs, tables, styles, page layout, headers/footers, and embedded images, with diagnostics for unsupported details |
 | Plain text projection | `github.com/mobinova/udf/export/text` | Implemented; body text only |
 | Markdown | `github.com/mobinova/udf/export/markdown` | Implemented; unsupported visible content is reported or rejected |
 | Word DOCX | `github.com/mobinova/udf/export/docx` | Implemented for the documented model subset; compromises are reported |
@@ -130,9 +132,11 @@ udf inspect --json ./input.udf
 udf text ./input.udf
 udf export --format markdown --allow-lossy --output ./out.md --report ./out.report.json ./input.udf
 udf export --format docx --allow-lossy --output ./out.docx ./input.udf
+udf inspect --json --input-format markdown ./notes.md
+udf export --input-format docx --format markdown --allow-lossy --output ./converted.md ./document.docx
 ```
 
-`inspect --json` reports format and structure counts, signature presence, and diagnostic codes. It does not emit body text or document property values. `text` explicitly emits the body-text projection. Export reports contain stable codes and locations, not extracted content. Use `--output -` only when you intend to write document bytes to stdout.
+The input format defaults to UDF. Set `--input-format markdown` or `--input-format docx` to import those formats; format detection is explicit. `inspect --json` reports format and structure counts, signature presence, and diagnostic codes. It does not emit body text or document property values. `text` explicitly emits the body-text projection. Export reports contain stable codes and locations, not extracted content. Use `--output -` only when you intend to write document bytes to stdout.
 
 ## Agent workflow
 
@@ -166,6 +170,60 @@ doc, err := udf.ParseFileWithOptions("large.udf", udf.ParseOptions{
 ```
 
 The parser records signature presence and archive facts only. It does not verify the signature. The original archive remains the caller's responsibility.
+
+## Importers
+
+The `udf.Importer` interface converts one explicitly selected source format into `*udf.Document`. Importers do not guess a format from filenames or register themselves in a global registry. Parse and import diagnostics are available on `Document.Diagnostics`.
+
+```go
+import (
+	"context"
+	"strings"
+
+	mdimporter "github.com/mobinova/udf/importer/markdown"
+)
+
+doc, err := (mdimporter.Importer{}).Import(
+	context.Background(), strings.NewReader("# Imported heading\n\nText."),
+)
+```
+
+The UDF importer delegates to the existing UDF parser, so it produces the same normalized model. For local UDF files, `udf.ParseFile` remains optimized for the ZIP archive's random-access needs. Markdown images and DOCX external links are never downloaded; DOCX embedded images are retained when supported.
+
+The same importer and exporter interfaces can be composed in application code:
+
+```go
+import (
+	"context"
+	"fmt"
+	"io"
+	"strings"
+
+	udf "github.com/mobinova/udf"
+	docxexport "github.com/mobinova/udf/export/docx"
+	mdimporter "github.com/mobinova/udf/importer/markdown"
+)
+
+func convert(ctx context.Context, markdownSource string, output, reportOutput io.Writer) error {
+	var reader udf.Importer = mdimporter.Importer{}
+	var writer udf.Exporter = docxexport.Exporter{Options: docxexport.Options{AllowLossy: true}}
+
+	doc, err := reader.Import(ctx, strings.NewReader(markdownSource))
+	if err != nil {
+		return err
+	}
+	report, err := writer.Export(ctx, doc, output)
+	if err != nil {
+		return err
+	}
+	for _, diagnostic := range report.Diagnostics {
+		fmt.Fprintf(reportOutput, "%s %s\n", diagnostic.Code, diagnostic.Location)
+	}
+	return nil
+}
+```
+
+The caller chooses both ends explicitly; there is no filename guessing or plugin registry.
 
 ## Exporters and conversion reports
 

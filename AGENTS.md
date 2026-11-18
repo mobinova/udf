@@ -11,6 +11,8 @@
 ## Implementation
 
 - Keep UDF ZIP/XML interpretation in the parser and normalized model. Exporters consume the public model and report compromises through `ExportReport` diagnostics.
+- Importers are explicitly selected by the caller and convert one source format into the shared model. Do not add filename-based format guessing or a global importer registry without a concrete need.
+- Never fetch Markdown images, DOCX links, or other source references during import. Only retain resources embedded in the input package.
 - Do not silently omit visible content. Reject unsupported visible content by default; any explicit lossy mode must report stable diagnostic codes and locations.
 - Preserve source text and ordering. Do not normalize legal names, numbers, addresses, or spelling as part of conversion.
 - Keep limits and input validation on untrusted ZIP, XML, text, and embedded resources.
