@@ -15,6 +15,9 @@
 - Preserve source text and ordering. Do not normalize legal names, numbers, addresses, or spelling as part of conversion.
 - Keep limits and input validation on untrusted ZIP, XML, text, and embedded resources.
 - Keep examples self-contained, synthetic where possible, and runnable with the public API.
+- Keep CLI inspection structural by default. Commands that emit document text must be explicit; JSON inspection and reports must not include source text or property values.
+- Prevent CLI exports and reports from overwriting the input UDF. Route diagnostic reports separately from document bytes.
+- Keep release builds reproducible and cross-platform. Never embed credentials or private UDF fixtures in release artifacts.
 
 ## Validation and Git
 

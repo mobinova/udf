@@ -15,6 +15,7 @@ The parser and exporters run locally. The library does not send documents or ext
 | Markdown | `github.com/mobinova/udf/export/markdown` | Implemented; unsupported visible content is reported or rejected |
 | Word DOCX | `github.com/mobinova/udf/export/docx` | Implemented for the documented model subset; compromises are reported |
 | Write a UDF derivative | `github.com/mobinova/udf/export/udf` | Implemented; output is unsigned and not byte-identical |
+| Command-line inspection and export | `cmd/udf` | Implemented; JSON structural summary and text/Markdown/DOCX/UDF output |
 | HTML and PDF | — | Not implemented |
 
 This is not a claim of complete UDF compatibility or exact visual reproduction. The format inventory and remaining proof gates are tracked in [PLAN.md](PLAN.md).
@@ -27,7 +28,35 @@ The module requires Go 1.26 or newer.
 go get github.com/mobinova/udf
 ```
 
+Install the `udf` command with Go on Windows, macOS, or Linux:
+
+```sh
+go install github.com/mobinova/udf/cmd/udf@latest
+```
+
+Prebuilt CLI archives for Windows (ZIP), macOS, and Linux (tar.gz) are available on the [GitHub Releases page](https://github.com/mobinova/udf/releases/latest). macOS users can install the Homebrew formula:
+
+```sh
+brew tap mobinova/udf
+brew install mobinova/udf/udf
+```
+
 The DOCX exporter uses the pure-Go [`docxgo/v2`](https://github.com/mmonterroca/docxgo) backend. The parser, text, Markdown, and UDF exporter packages use the Go standard library.
+
+Install the CLI with Go on Windows, macOS, or Linux:
+
+```sh
+go install github.com/mobinova/udf/cmd/udf@latest
+```
+
+macOS users can install the Homebrew formula:
+
+```sh
+brew tap mobinova/udf
+brew install mobinova/udf/udf
+```
+
+Prebuilt archives for Windows (`.zip`), macOS, and Linux are published on the [releases page](https://github.com/mobinova/udf/releases/latest). The checksums are in `checksums.txt` on each release.
 
 ## Quick start
 
@@ -88,6 +117,38 @@ The [custom exporter example](examples/custom-exporter) shows how to implement t
 go run ./examples/custom-exporter ./document.udf > document.json
 ```
 
+### CLI commands
+
+The CLI is designed for scripts and agents as well as interactive use:
+
+```sh
+udf version
+udf inspect --json ./input.udf
+udf text ./input.udf
+udf export --format markdown --allow-lossy --output ./out.md --report ./out.report.json ./input.udf
+udf export --format docx --allow-lossy --output ./out.docx ./input.udf
+```
+
+`inspect --json` reports format and structure counts, signature presence, and diagnostic codes. It does not emit body text or document property values. `text` explicitly emits the body-text projection. Export reports contain stable codes and locations, not extracted content. Use `--output -` only when you intend to write document bytes to stdout.
+
+## Agent workflow
+
+The `udf` command provides a stable, local interface that works well from scripts and agent tool calls. `inspect --json` returns structural metadata, signature presence, and parse diagnostic codes without including body text or document property values:
+
+```sh
+udf inspect --json ./input.udf
+```
+
+Request body text explicitly, or export to a file with a separate JSON conversion report:
+
+```sh
+udf text ./input.udf
+udf export --format markdown --allow-lossy --output ./out.md --report ./out.report.json ./input.udf
+udf export --format docx --allow-lossy --output ./out.docx --report ./out.report.json ./input.udf
+```
+
+The CLI refuses to overwrite the input UDF. It writes file outputs through a temporary file and replaces the destination only after a successful export. Keep diagnostic JSON separate from document bytes; `--output -` writes document data to stdout. UDF export of signed input requires an explicit `--allow-unsigned` flag, and the resulting UDF is an unsigned derivative.
+
 ## Parsing options
 
 The parser offers `Parse`, `ParseFile`, `ParseBytes`, and `ParseReaderAt`, with `WithOptions` variants for each input form. `ParseFile` and `ParseReaderAt` use random-access ZIP parsing; the generic `Parse(io.Reader)` buffers up to the configured compressed-input limit.
@@ -140,4 +201,4 @@ The GitHub Actions workflow runs formatting checks, tests, vet, and race tests o
 
 ## License
 
-This repository does not yet declare a project license. Public visibility alone does not grant permission to reuse or redistribute the code.
+This project is licensed under the [MIT License](LICENSE).
