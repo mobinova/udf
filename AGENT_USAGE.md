@@ -67,6 +67,38 @@ udf export --input-format docx --format markdown \
   --allow-lossy --output ./out.md --report ./out.report.json ./document.docx
 ```
 
+For a DOCX conversion, begin in strict mode so unprojectable visible content
+stops the export and leaves the report available for review:
+
+```sh
+udf export --input-format udf --format docx \
+  --output ./out.docx --report ./out.report.json ./document.udf
+```
+
+After a successful export, compare the readable text projection locally. This
+can reveal missing or changed text; it does not prove that page layout or
+formatting is visually identical.
+
+macOS/Linux:
+
+```sh
+udf text --input-format udf ./document.udf > ./source.txt
+udf text --input-format docx ./out.docx > ./converted.txt
+diff -u ./source.txt ./converted.txt
+```
+
+Windows PowerShell:
+
+```powershell
+udf text --input-format udf .\document.udf > .\source.txt
+udf text --input-format docx .\out.docx > .\converted.txt
+Compare-Object (Get-Content .\source.txt) (Get-Content .\converted.txt)
+```
+
+If strict export reports unsupported content, inspect the report first. Only
+rerun with `--allow-lossy` if the reported fallback is acceptable, and keep
+both reports with the generated file.
+
 Supported output formats are `text`, `markdown`, `docx`, and `udf`. Without `--allow-lossy`, Markdown and DOCX exports reject unsupported visible content instead of silently omitting it. Inspect the JSON report for stable diagnostic codes and locations.
 
 For UDF output, use `--allow-unsigned` only when an unsigned derivative is acceptable:
