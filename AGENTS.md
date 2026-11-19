@@ -10,6 +10,7 @@
 
 ## Implementation
 
+- Refer to `AGENT_USAGE.md` for installed CLI commands and agent-facing import/export guidance.
 - Keep UDF ZIP/XML interpretation in the parser and normalized model. Exporters consume the public model and report compromises through `ExportReport` diagnostics.
 - Importers are explicitly selected by the caller and convert one source format into the shared model. Do not add filename-based format guessing or a global importer registry without a concrete need.
 - Never fetch Markdown images, DOCX links, or other source references during import. Only retain resources embedded in the input package.

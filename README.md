@@ -22,6 +22,8 @@ The parser and exporters run locally. The library does not send documents or ext
 
 This is not a claim of complete UDF compatibility or exact visual reproduction. The format inventory and remaining proof gates are tracked in [PLAN.md](PLAN.md).
 
+For Codex, Claude Code, Antigravity, and other AI agents using the CLI, see [AGENT_USAGE.md](AGENT_USAGE.md) for install commands, safe inspection, format selection, export flags, and diagnostic handling.
+
 ## Requirements and installation
 
 The module requires Go 1.26 or newer.
@@ -47,21 +49,6 @@ brew install mobinova/udf/udf
 Homebrew requires an explicit trust decision before loading formulas from third-party taps.
 
 The DOCX exporter uses the pure-Go [`docxgo/v2`](https://github.com/mmonterroca/docxgo) backend. The parser, text, Markdown, and UDF exporter packages use the Go standard library.
-
-Install the CLI with Go on Windows, macOS, or Linux:
-
-```sh
-go install github.com/mobinova/udf/cmd/udf@latest
-```
-
-macOS users can install the Homebrew formula:
-
-```sh
-brew tap mobinova/udf
-brew install mobinova/udf/udf
-```
-
-Prebuilt archives for Windows (`.zip`), macOS, and Linux are published on the [releases page](https://github.com/mobinova/udf/releases/latest). The checksums are in `checksums.txt` on each release.
 
 ## Quick start
 
